@@ -21,7 +21,7 @@ convenciones de llamada entre distintos lenguajes y niveles de abstracción. El
 objetivo principal del proyecto no es solamente procesar un conjunto de datos,
 sino comprobar en la práctica cómo deben intercambiarse argumentos, valores de
 retorno y estructuras de memoria cuando intervienen componentes escritos en
-Python, C y lenguaje ensamblador.
+Python, C y lenguaje ensamblador.about:blank#blocked
 
 Para llevar adelante esta comprobación, el proyecto utiliza un conjunto de
 herramientas que permiten poner a prueba dicha convención de llamada en un
@@ -407,6 +407,37 @@ de retorno y zonas todavía en cero. Esto refleja un estado previo al trabajo de
 parseo: el stack ya sostiene el contexto de la llamada, pero las estructuras de
 salida aún no fueron completadas.
 
+La imagen permite precisar aún más esta situación. En la parte superior puede
+verse que GDB ubica la ejecución en `main.c:488`, exactamente en la línea donde
+se realiza la asignación:
+
+`point_count = parse_world_bank_json(...)`
+
+Esto confirma que todavía no se ingresó al cuerpo efectivo de la función desde
+la perspectiva del frame actual, sino que el programa está posicionado en el
+sitio de llamada. También resulta significativo que `info frame` reporte un
+`saved rip`, es decir, la dirección de retorno que permitirá continuar la
+ejecución de `main` luego de que la rutina de análisis finalice. En otras
+palabras, el stack ya contiene la información necesaria para reanudar el flujo
+del programa, aun antes de que la función llamada produzca resultados.
+
+Otro aspecto visible en la captura es la coexistencia de datos de distinto
+tipo dentro del mismo frame: por un lado aparecen parámetros simples como
+`start_year` y `end_year`; por otro, punteros a buffers más complejos, como
+`http_response` y `response_body`, que remiten a bloques en memoria fuera del
+frame inmediato. Esta diferencia es importante porque muestra que el stack no
+contiene necesariamente todos los datos completos, sino principalmente
+referencias hacia regiones más grandes reservadas en otras áreas de memoria.
+
+La salida de `x/32gx $sp` refuerza esta lectura. Allí se observan valores que
+corresponden a direcciones válidas del proceso, junto con una secuencia larga
+de celdas nulas. El patrón es coherente con un estado inicial de trabajo: el
+frame de `main` ya reservó espacio para variables como `points`, pero ese
+espacio todavía no fue llenado con información útil. Desde una perspectiva
+didáctica, esta primera instantánea representa el momento en que la pila está
+preparada para delegar el control, aunque todavía no contiene los efectos de la
+computación que vendrá a continuación.
+
 ### Secuencia 2: estado durante la ejecución de `parse_world_bank_json`
 
 La segunda captura muestra el estado interno una vez que se retorna al frame de
@@ -444,6 +475,36 @@ simple soporte de invocación y pasa a contener el estado de trabajo concreto de
 la función. Esta transición es precisamente la evidencia de cómo el stack se
 modifica dinámicamente al entrar en una rutina con lógica propia.
 
+La captura resulta especialmente interesante porque deja ver el contraste entre
+argumentos y variables locales. `info args` enumera parámetros que llegan desde
+`main`, como `json_body`, `country_name` y `points`, mientras que `info locals`
+expone entidades creadas dentro de `parse_world_bank_json`, entre ellas
+`cursor` y `count`. Esta distinción permite observar en forma concreta cómo una
+función combina información heredada del llamador con estado propio reservado en
+su frame local.
+
+Además, la imagen muestra un detalle valioso: algunos valores locales todavía
+no se encuentran estabilizados o presentan contenidos transitorios. Por
+ejemplo, `count` aparece con un valor inconsistente y `cursor` no resulta
+todavía interpretable de forma correcta. Esto no debe leerse como un error del
+programa, sino como una consecuencia normal de inspeccionar la función en un
+momento intermedio de ejecución, antes de que todas las variables hayan sido
+inicializadas o consolidadas en un punto lógico estable. Desde el punto de
+vista del análisis del stack, este fenómeno es útil porque revela que la pila
+no contiene únicamente estado “final”, sino también estados parciales y
+temporales propios de la ejecución en curso.
+
+La volcada hexadecimal también aporta evidencia sobre el crecimiento efectivo
+del frame. En comparación con la secuencia anterior, aquí aparecen más
+direcciones cercanas entre sí y más palabras con contenido no nulo. Esto
+sugiere que el espacio de stack reservado para la función está siendo utilizado
+activamente para almacenar referencias, offsets y resultados parciales del
+parseo. A su vez, el `saved rip` reportado por `info frame` señala que este
+nuevo frame queda encadenado con el de `main`, preservando la continuidad del
+control de ejecución. Lo que se ve, por lo tanto, no es solo una colección de
+variables, sino una evidencia material de la llamada a función y de la
+estructura jerárquica de la pila.
+
 ### Secuencia 3: estado posterior al retorno desde la función
 
 La tercera captura corresponde al momento posterior al retorno desde
@@ -476,6 +537,34 @@ referenciadas por `points` y `resolved_country` ya contienen información útil.
 Es decir, el frame de la función analizada se destruye, pero los cambios
 producidos sobre memoria compartida o pasada por referencia permanecen
 observables una vez que el control retorna.
+
+La captura permite verificar esto con varios indicadores concretos. En primer
+lugar, `info frame` vuelve a ubicar la ejecución en `main.c:488`, igual que en
+la primera secuencia, pero ahora el contexto ya no es preparatorio sino
+posterior al retorno. En segundo lugar, `print point_count` muestra el valor
+`9`, indicando que la función logró identificar y almacenar nueve registros
+válidos para el país consultado. Esto significa que la llamada no solo retornó
+correctamente, sino que además dejó un resultado interpretable en el llamador.
+
+La inspección de `points[0]` y del arreglo completo muestra un cambio mucho más
+profundo que el simple retorno del control. Donde antes había estructuras
+vacías, ahora aparecen elementos concretos con `year`, `original_value`,
+`converted_value` y `adjusted_value`. En la imagen se observa, por ejemplo, que
+los valores originales de varios años ya fueron copiados al arreglo. Aunque las
+etapas de conversión y ajuste todavía no se ejecutaron, el parseo ya produjo su
+efecto central: transformar el JSON en una estructura interna ordenada y usable
+por el resto del programa.
+
+También es relevante notar que la volcada de `x/32gx $sp` vuelve a parecerse a
+la del caso inicial, pero no de manera idéntica. El frame de
+`parse_world_bank_json` ya no está presente, por lo que desaparecen sus
+variables temporales; sin embargo, el contenido asociado a estructuras
+persistentes ya no está en cero. Este contraste entre “frame recuperado” y
+“datos modificados” es una de las mejores evidencias del comportamiento real de
+la pila: la memoria local de la función se destruye, pero los cambios efectuados
+sobre objetos compartidos sobreviven al retorno. En términos de Sistemas de
+Computación, esta imagen ilustra con claridad la diferencia entre duración del
+frame y duración de los datos a los que se accede mediante punteros.
 
 ### Interpretación general de la variación del stack
 
@@ -511,15 +600,54 @@ del comportamiento dinámico de la pila.
 
 ## Conclusión
 
-En este trabajo se desarrolla una integración entre
-distintos niveles de programación. A partir de un problema concreto, como la
-obtención y transformación del índice de Gini, el proyecto combina acceso a
-servicios externos, procesamiento de datos, interoperabilidad con bibliotecas
-nativas, programación en C y rutinas en Assembly.
+El desarrollo realizado a lo largo de este trabajo permite extraer una
+conclusión central: cuando una misma aplicación distribuye su lógica entre
+distintos niveles de abstracción, el aspecto verdaderamente crítico no es solo
+qué hace cada componente, sino de qué manera se comunican entre sí respetando
+una convención de llamada común. En otras palabras, el problema principal no se
+reduce a consultar una API, transformar números o mostrar resultados, sino a
+garantizar que los argumentos, direcciones, tipos y valores de retorno circulen
+correctamente entre contextos de ejecución diferentes.
 
-En términos de Sistemas de Computación, el trabajo resulta especialmente
-interesante porque obliga a articular conceptos de alto y bajo nivel dentro de
-una misma aplicación. El uso de `ctypes`, bibliotecas compartidas, punteros,
-convenciones de llamada, compilación y automatización con Docker convierte a
-este proyecto en un ejercicio representativo de integración entre software de
-aplicación y componentes cercanos a la arquitectura de la máquina.
+Las distintas variantes del proyecto permiten observar esta cuestión desde
+perspectivas complementarias. En `without_docker`, el intercambio entre Python
+y la biblioteca nativa evidencia la necesidad de definir con precisión cómo se
+representan los datos al pasar desde estructuras de alto nivel hacia arreglos
+contiguos de memoria. En `docker_test`, la relación entre Python, C y Assembly
+expone con mayor claridad la importancia de respetar la ABI esperada por cada
+capa, tanto en el orden de los parámetros como en el uso de registros, el
+tratamiento de punteros y la interpretación del valor de retorno. Finalmente,
+en `c_program`, el análisis con GDB hace visible la materialización concreta de
+estas convenciones sobre la pila de ejecución: frames que se crean y destruyen,
+registros preservados, direcciones de retorno y variables locales que existen
+solo dentro del alcance de una llamada.
+
+Desde la perspectiva de Sistemas de Computación, este recorrido demuestra que
+las convenciones de llamada no son un detalle secundario de implementación,
+sino una condición estructural para que el programa funcione correctamente. Si
+una capa interpreta mal el tamaño de un dato, pasa un puntero inválido, altera
+un registro que debía preservarse o retorna un valor con un formato distinto al
+esperado, la comunicación completa entre componentes queda comprometida. Por
+eso, comprender cómo se arma un frame, dónde quedan ubicados los argumentos,
+qué información se conserva al entrar y salir de una función, y cómo persisten
+los cambios realizados por referencia resulta tan importante como entender la
+lógica funcional del programa mismo.
+
+En este sentido, el trabajo realizado no solo valida el flujo del índice de
+Gini como caso de estudio, sino que también confirma en la práctica varios
+conceptos fundamentales de la materia: la organización de la pila, el paso de
+parámetros entre funciones, la relación entre lenguaje de alto nivel y código
+nativo, y la necesidad de una disciplina rigurosa en la interfaz entre módulos.
+La observación del comportamiento antes, durante y después de llamadas clave
+permite ver que la ejecución de un programa no es una secuencia abstracta de
+instrucciones aisladas, sino una coordinación precisa entre contextos de
+memoria y reglas de invocación que deben cumplirse de manera consistente.
+
+Por lo tanto, la principal enseñanza del trabajo es que las convenciones de
+llamada constituyen uno de los mecanismos fundamentales que hacen posible la
+integración entre niveles de software. Gracias a ellas, un programa escrito en
+Python puede delegar tareas en C, una rutina en C puede apoyarse en Assembly, y
+un mismo flujo puede mantener coherencia semántica y estabilidad en memoria a
+través de todas sus etapas. Analizar este proceso en un caso real permitió
+trasladar conceptos teóricos de la arquitectura y de la ejecución de programas
+a una evidencia concreta, observable y verificable sobre la máquina.
