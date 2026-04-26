@@ -72,7 +72,7 @@ de arranque.
 
 # UEFI y Coreboot
 
-## ¿Qué es UEFI?
+## UEFI
 
 UEFI, sigla de **Unified Extensible Firmware Interface**, es una interfaz de
 firmware que reemplaza al BIOS tradicional en la mayoría de los equipos
@@ -85,7 +85,7 @@ soporte para discos grandes mediante GPT, posibilidad de trabajar en 32 o 64
 bits, controladores propios, variables persistentes en memoria no volátil y un
 modelo de servicios accesible mediante interfaces bien definidas.
 
-## ¿Cómo puedo usar UEFI?
+## Uso de UEFI
 
 UEFI puede utilizarse de distintas maneras según el nivel de desarrollo que se
 quiera abordar. Desde la perspectiva de un usuario, se lo usa cuando el equipo
